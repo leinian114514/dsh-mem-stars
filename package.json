@@ -1,0 +1,32 @@
+{
+  "name": "dsh-mem-stars",
+  "version": "0.1.0",
+  "description": "记忆星图：把 meow-memory 的记忆摊成一片可核查的三维星海（每条边带 why），挂在 DSH 侧栏",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "public",
+    "cordis.patch.yml"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "keywords": ["deepseek", "deepseek-harness", "dsh", "dsh-plugin", "memory", "stars"],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": ["@deepseek-ai/dsh-client-ui-slots"]
+    }
+  }
+}

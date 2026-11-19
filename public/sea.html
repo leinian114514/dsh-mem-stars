@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>记忆海 · Memory Sea</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: #05060b; overflow: hidden; }
+  body { font: 13px/1.5 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif; color: #cfd6e4; }
+  #sea { position: fixed; inset: 0; display: block; }
+  .hud { position: fixed; z-index: 3; background: rgba(10, 13, 22, .72); border: 1px solid rgba(120, 160, 255, .18);
+         border-radius: 12px; backdrop-filter: blur(8px); }
+  #top { top: 16px; left: 16px; padding: 12px 16px; max-width: 380px; }
+  #top h1 { margin: 0 0 4px; font-size: 15px; font-weight: 600; letter-spacing: .12em; color: #9fc1ff; }
+  #top .sub { color: #6d7891; font-size: 12px; }
+  #top .stats { margin-top: 8px; display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: #8e9ab5; }
+  #top .stats b { color: #dbe6ff; font-weight: 600; }
+  #detail { right: 16px; bottom: 16px; width: 320px; padding: 12px 14px; display: none; pointer-events: none; }
+  #detail.on { display: block; }
+  #detail .k { color: #6d7891; font-size: 11px; letter-spacing: .08em; text-transform: uppercase; }
+  #detail .text { margin: 6px 0 10px; color: #e8eeff; font-size: 14px; line-height: 1.6; word-break: break-word; white-space: pre-wrap; }
+  #detail .row { display: flex; gap: 10px; flex-wrap: wrap; color: #7f8aa5; font-size: 12px; }
+  #detail .tags span { display: inline-block; margin: 0 6px 6px 0; padding: 1px 8px; border-radius: 999px;
+                       background: rgba(120, 160, 255, .12); color: #a9c1ff; font-size: 11px; }
+  #tools { left: 16px; bottom: 16px; padding: 8px; display: flex; gap: 6px; align-items: center; }
+  #tools button { background: rgba(120, 160, 255, .1); color: #b8c9ee; border: 1px solid rgba(120, 160, 255, .22);
+                  border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+  #tools button:hover { background: rgba(120, 160, 255, .2); }
+  #tools button.on { background: rgba(120, 160, 255, .3); color: #fff; }
+  #tools input {
+    background: rgba(18, 22, 32, .85); border: 1px solid rgba(120, 160, 255, .28);
+    border-radius: 6px; color: #dfe7ff; font-size: 12.5px; padding: 5px 9px;
+    width: 130px; outline: none; font-family: inherit;
+  }
+  #tools input::placeholder { color: #5b6478; }
+  #tools input:focus { border-color: rgba(120, 160, 255, .6); width: 170px; }
+  #qhits { font-size: 11.5px; color: #7f8ba3; min-width: 42px; }
+  #hint { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); color: #4d566d; font-size: 12px; z-index: 2; }
+  #error { position: fixed; inset: 0; display: none; place-items: center; z-index: 5; color: #ff9a9a; font-size: 14px; }
+</style>
+</head>
+<body>
+<canvas id="sea"></canvas>
+
+<div class="hud" id="top">
+  <h1>记忆海</h1>
+  <div class="sub">她经历过的每一件事，都是一个点</div>
+  <div class="stats" id="stats"></div>
+</div>
+
+<div class="hud" id="detail">
+  <div class="k" id="dKind">经历</div>
+  <div class="text" id="dText"></div>
+  <div class="row"><span id="dTime"></span><span id="dTopic"></span><span id="dSource"></span></div>
+  <div class="tags" id="dTags"></div>
+</div>
+
+<div class="hud" id="tools">
+  <input id="q" placeholder="搜经历…" autocomplete="off" title="在全部记忆里搜字，命中就只留下它们（Esc 清空）" />
+  <span id="qhits"></span>
+  <button id="btnFocus" class="on" title="只把本轮检索命中的点连亮">高亮焦点</button>
+  <button id="btnLabels" class="on" title="显示/隐藏每个点旁边的经历文字">标签</button>
+  <button id="btnEdges" title="连线：只在鼠标指到某个点时画它自己的线">连线 · 仅悬停</button>
+  <button id="btnRecent" title="只看最近 300 个点">最近 300</button>
+  <button id="btnReset" title="回到初始视角">复位</button>
+</div>
+<div id="hint">滚轮拉近拉远 · 左键拖动旋转 · 右键拖动平移 · 点一颗星看原文</div>
+<div id="error"></div>
+
+<script>
+// 先把错误显示出来：黑屏时至少能看到是哪一行炸的
+window.addEventListener('error', (e) => {
+  const box = document.getElementById('error');
+  if (!box) return;
+  box.style.display = 'grid';
+  box.innerHTML = '';
+  const d = document.createElement('div');
+  d.style.cssText = 'text-align:left;font:12px/1.7 ui-monospace,monospace;color:#ffb3b3;max-width:80vw;white-space:pre-wrap';
+  d.textContent = '脚本出错：' + (e.message || '') + '\n' + (e.filename || '') + ':' + (e.lineno || 0) + ':' + (e.colno || 0);
+  box.appendChild(d);
+});
+(() => {
+  const params = new URLSearchParams(location.search);
+  const canvas = document.getElementById('sea');
+  const ctx = canvas.getContext('2d');
+  const elStats = document.getElementById('stats');
+  const elError = document.getElementById('error');
+  const detail = document.getElementById('detail');
+
+  const KIND_LABEL = {
+    event: '经历', feeling: '心情', fact: '事实', plan: '约定', conclusion: '经验',
+    experience: '项目', agreement: '准则',
+  };
+  const KIND_COLOR = {
+    event: [150, 190, 255], feeling: [255, 160, 210], fact: [130, 230, 200],
+    plan: [255, 210, 140], conclusion: [190, 165, 255],
+    experience: [120, 205, 235], agreement: [255, 186, 120],
+  };
+  const DIARY_COLOR = [255, 205, 120];
+
+  let scene = null;
+  let points = [];
+  let edges = [];
+  let focus = new Set();
+  const FOCAL = 2700;
+  const CAM_DEFAULT = { yaw: 0.45, pitch: -0.30, dist: 3000, panX: 0, panY: 0 };
+  let cam = { ...CAM_DEFAULT };
+  let lastPos = new Map();
+  let dragging = null;
+  let dragMoved = false;
+  let hovered = null;
+  let selected = null;
+  let onlyFocus = false;
+  // 服务端给的焦点集合（本轮检索命中）。搜索清空时要能回到它。
+  let baseFocusIds = [];
+  let showLabels = true;
+  let showAllEdges = false;
+  // 公转的时间原点：每次重新拿场景都归零，否则点会瞬间跳到另一个角位置
+  let motionEpoch = 0;
+  let lastFetch = 0;
+
+  const hash = (str) => {
+    let h = 2166136261;
+    for (let i = 0; i < str.length; i += 1) { h ^= str.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; }
+    return h >>> 0;
+  };
+  const rand = (str) => (hash(str) % 100000) / 100000;
+
+  // HSL → RGB：每个项目一个专属色相，靠它区分谁是谁
+  function hsl(h, s, l) {
+    const a = s * Math.min(l, 1 - l);
+    const f = (n) => {
+      const k = (n + h / 30) % 12;
+      return l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1));
+    };
+    return [Math.round(f(0) * 255), Math.round(f(8) * 255), Math.round(f(4) * 255)];
+  }
+
+  function resize() {
+    const dpr = Math.min(2, window.devicePixelRatio || 1);
+    canvas.width = Math.floor(innerWidth * dpr);
+    canvas.height = Math.floor(innerHeight * dpr);
+    canvas.style.width = innerWidth + 'px';
+    canvas.style.height = innerHeight + 'px';
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+
+  // ── 太阳系排布 ──────────────────────────────────────────────────────
+  // 核心记忆＝太阳；每个项目＝一颗行星；项目名下的记忆＝行星环上的碎块；
+  // 还没归进任何项目的原始对话＝最外圈的尘埃带。
+  // 「用得多就靠得近」暂时拿条目数（质量）当代理 —— 命中日志才 2 条，
+  // 等它攒到几百条再换成真实使用频率，现在不假装有那个精度。
+  const SUN_RINGS = ['soul', 'user', 'core:rules', 'core:fact', 'core:lesson', 'core:topic'];
+  const RING_ORDER = ['overview', 'decisions', 'structure', 'ops', 'todo', 'quotes',
+    'project', 'rules', 'lesson', 'topic', 'fact', 'misc'];
+  const ringOrder = (key) => {
+    const i = RING_ORDER.indexOf(key);
+    return i < 0 ? RING_ORDER.length : i;
+  };
+  const DUST_R = 1240;
+
+  function layout(list) {
+    const byTier = { 1: [], 2: [], 3: [], 4: [] };
+    for (const p of list) (byTier[p.tier] || byTier[4]).push(p);
+
+    // ① 太阳：核心记忆排成几圈**扁平星环**围着发光的核（原来是同心球壳，看着像一团糊）
+    //    每组 ring = 一圈；相邻圈旋转方向相反，像土星环那样有层次。
+    const shells = new Map();
+    for (const p of byTier[1]) {
+      const key = p.ring || 'core:fact';
+      if (!shells.has(key)) shells.set(key, []);
+      shells.get(key).push(p);
+    }
+    const shellKeys = [
+      ...SUN_RINGS.filter((k) => shells.has(k)),
+      ...[...shells.keys()].filter((k) => !SUN_RINGS.includes(k)),
+    ];
+    shellKeys.forEach((key, si) => {
+      const group = shells.get(key);
+      // 同心环：起点 130（给中间的太阳留出空），每圈 +20，再按条数微调
+      const ringR = 130 + si * 20 + Math.sqrt(group.length) * 2.2;
+      const N = Math.max(1, group.length);
+      group.forEach((p, i) => {
+        // 均匀分布 + 一点点抖动，避免看起来像机械齿轮
+        const phi = (i / N) * Math.PI * 2 + rand(p.id) * 0.10;
+        const rr = ringR + rand(p.id + 's') * 3.5;
+        // 竖直方向只留很小的起伏：星环是扁的，不是球
+        const y = (rand(p.id + 'y') - 0.5) * 7;
+        p.sunR = rr;
+        p.sunY = y;
+        p.sunA0 = phi;
+        // 相邻圈反向转，视觉上分开层次
+        p.sunSpeed = 0.000018 * (si % 2 === 0 ? 1 : -0.85);
+        p.x = Math.cos(phi) * rr;
+        p.y = y;
+        p.z = Math.sin(phi) * rr;
+        p.phase = rand(p.id + 'p') * Math.PI * 2;
+        // 星环上的点要小：原来是 1.15 + min(2.2, ...)，一密就糊成一片
+        p.radius = 0.72 + Math.min(0.9, (p.sizeHint || 2) * 0.18);
+        p.coreRing = true;
+      });
+    });
+
+    // ② 行星：质量越大轨道越靠内，横跨 300~920
+    const planets = byTier[2].slice().sort((a, b) => (b.mass || 0) - (a.mass || 0));
+    const planetAt = new Map();
+    planets.forEach((p, i) => {
+      const t = planets.length <= 1 ? 0 : i / (planets.length - 1);
+      const orbitR = 300 + Math.sqrt(t) * 620;
+      const a = i * 2.399963 + rand(p.id + 'a') * 0.55;   // 黄金角，轨道不重叠
+      const tilt = (rand(p.id + 't') - 0.5) * 0.95;       // 上下明显错开，不全在一个平面
+      const cy = (rand(p.id + 'y') - 0.5) * 230;
+      const lz = Math.sin(a) * orbitR;
+      p.x = Math.cos(a) * orbitR;
+      p.y = cy + lz * Math.sin(tilt);
+      p.z = lz * Math.cos(tilt);
+      p.phase = rand(p.id + 'p') * Math.PI * 2;
+      p.orbitR = orbitR;
+      p.orbitTilt = tilt;
+      p.orbitY = cy;
+      p.orbitA0 = a;
+      p.orbitSpeed = 0.000075 * (300 / orbitR);          // 越靠内转得越快
+      p.planet = true;
+      // 项目专属色：黄金角散开色相，再轮四档明暗——色相撞了还能靠亮度分开
+      p.hue = (i * 137.508 + 12) % 360;
+      p.planetLight = [0.62, 0.75, 0.52, 0.68][i % 4];
+      // 大小按它名下有多少条记忆：平方根，778 条≈10.4、156 条≈6.0、30 条≈3.8
+      p.radius = 2.2 + Math.min(8.2, Math.sqrt(Math.max(1, p.mass || 1)) * 0.30);
+      planetAt.set(p.id, p);
+    });
+
+    // ③ 星环：项目按 subcategory 分层，一层一个环，每个环自己倾斜
+    const members = new Map();
+    for (const p of byTier[3]) {
+      if (!p.parentId) { byTier[4].push(p); continue; }
+      if (!members.has(p.parentId)) members.set(p.parentId, []);
+      members.get(p.parentId).push(p);
+    }
+    for (const [pid, group] of members) {
+      const planet = planetAt.get(pid);
+      if (!planet) { byTier[4].push(...group); continue; }
+      const ringKeys = [];
+      for (const p of group) {
+        const k = p.ring || 'misc';
+        if (!ringKeys.includes(k)) ringKeys.push(k);
+      }
+      ringKeys.sort((a, b) => ringOrder(a) - ringOrder(b));
+      ringKeys.forEach((key, ri) => {
+        const inRing = group.filter((p) => (p.ring || 'misc') === key);
+        const rr = planet.radius * 2.2 + 15 + ri * 13;
+        const tilt = 0.22 + (ri % 3) * 0.14 + rand(pid + key) * 0.12;
+        const yaw = rand(pid + key + 'y') * Math.PI * 2;
+        const ct = Math.cos(tilt); const st = Math.sin(tilt);
+        const cyaw = Math.cos(yaw); const syaw = Math.sin(yaw);
+        planet.rings = planet.rings || [];
+        planet.rings.push({ rr, tilt, yaw, key, n: inRing.length });
+        inRing.forEach((p, i) => {
+          const a = (i / Math.max(1, inRing.length)) * Math.PI * 2 + rand(p.id + 'a') * 0.35;
+          const rad = rr * (0.94 + rand(p.id + 'j') * 0.14);
+          // 局部环面 → 绕 X 倾斜 → 绕 Y 旋转 → 平移到行星
+          const lx0 = Math.cos(a) * rad;
+          const ly0 = Math.sin(a) * rad;
+          const ly1 = ly0 * ct;
+          const lz1 = ly0 * st;
+          p.x = planet.x + lx0 * cyaw - lz1 * syaw;
+          p.y = planet.y + ly1;
+          p.z = planet.z + lx0 * syaw + lz1 * cyaw;
+          p.phase = rand(p.id + 'p') * Math.PI * 2;
+          p.radius = 0.95 + Math.min(2.0, (p.sizeHint || 2) * 0.34);
+          p.ringOf = pid;
+          p.ringKey = key;
+          p.hue = planet.hue;        // 环上的碎块跟着自家行星的颜色
+          // 绕着「自己那颗行星」转，不是绕太阳
+          p.ringR = rad;
+          p.ringTilt = tilt;
+          p.ringYaw = yaw;
+          p.ringA0 = a;
+          p.ringSpeed = (ri % 2 ? -1 : 1) * 0.00011 * (1 + ri * 0.12);
+          p.planetRef = planet;
+        });
+      });
+    }
+
+    // ④ 尘埃带：没归进任何项目的原始对话 → 绕太阳转
+    for (const p of byTier[4]) {
+      const a = rand(p.id + 'a') * Math.PI * 2;
+      const b = Math.acos(2 * rand(p.id + 'b') - 1);
+      const r = DUST_R * (0.82 + rand(p.id + 'r') * 0.3);
+      const lat = Math.cos(b) * 0.5;                     // 压扁成一条腰带
+      const hR = Math.sqrt(Math.max(0, 1 - lat * lat)) * r;
+      p.dustR = hR;
+      p.dustY = lat * r;
+      p.dustA0 = a;
+      p.dustSpeed = 0.000016 + rand(p.id + 'w') * 0.00002;
+      p.x = Math.cos(a) * hR;
+      p.y = p.dustY;
+      p.z = Math.sin(a) * hR;
+      p.phase = rand(p.id + 'p') * Math.PI * 2;
+      p.radius = 1.05;
+    }
+
+    // 颜色：项目靠色相区分，太阳统一橘红（核心层从里到外由亮到暗），尘埃压成冷灰不抢眼
+    for (const p of list) {
+      const hue = Number.isFinite(p.hue) ? p.hue : 210;
+      if (p.tier === 1) {
+        const l = p.ring === 'soul' ? 0.82 : p.ring === 'user' ? 0.73 : 0.63;
+        p.color = hsl(22, 0.90, l);
+      } else if (p.tier === 2) {
+        p.color = hsl(hue, 0.76, p.planetLight || 0.64);
+      } else if (p.tier === 3) {
+        p.color = hsl(hue, 0.66, 0.58);
+      } else {
+        p.color = hsl(210, 0.22, 0.63);
+      }
+    }
+
+    // 按第 0 帧把位置算出来
+    updateMotion(list, 0);
+  }
+
+  // 每帧推进公转：行星绕太阳、项目的碎块绕自己那颗行星、没归属的尘埃绕太阳。
+  // 行星先算一遍，环上的点才能拿到行星这一帧的位置。
+  function updateMotion(list, t) {
+    for (const p of list) {
+      if (p.tier === 2) {
+        const a = p.orbitA0 + t * p.orbitSpeed;
+        const lz = Math.sin(a) * p.orbitR;
+        p.x = Math.cos(a) * p.orbitR;
+        p.y = p.orbitY + lz * Math.sin(p.orbitTilt);
+        p.z = lz * Math.cos(p.orbitTilt);
+      } else if (p.tier === 1) {
+        const a = p.sunA0 + t * p.sunSpeed;
+        p.x = Math.cos(a) * p.sunR;
+        p.y = p.sunY;
+        p.z = Math.sin(a) * p.sunR;
+      }
+    }
+    for (const p of list) {
+      if (p.tier === 3 && p.planetRef) {
+        const pl = p.planetRef;
+        const a = p.ringA0 + t * p.ringSpeed;
+        const ct = Math.cos(p.ringTilt); const st = Math.sin(p.ringTilt);
+        const cyaw = Math.cos(p.ringYaw); const syaw = Math.sin(p.ringYaw);
+        const lx0 = Math.cos(a) * p.ringR;
+        const ly0 = Math.sin(a) * p.ringR;
+        const ly1 = ly0 * ct;
+        const lz1 = ly0 * st;
+        p.x = pl.x + lx0 * cyaw - lz1 * syaw;
+        p.y = pl.y + ly1;
+        p.z = pl.z + lx0 * syaw + lz1 * cyaw;
+      } else if (p.tier === 4) {
+        const a = p.dustA0 + t * p.dustSpeed;
+        p.x = Math.cos(a) * p.dustR;
+        p.y = p.dustY;
+        p.z = Math.sin(a) * p.dustR;
+      }
+    }
+  }
+
+  function ingest(data) {
+    scene = data;
+    points = (data.points || []).map((p) => ({ ...p }));
+    layout(points);
+    motionEpoch = performance.now();
+    // 太阳实际的体积（决定光晕多大）：全部核心记忆撑出来的那一团
+    // 顺便统计核心记忆有多少条真被调用过——被调过的越多，太阳越亮
+    let sunExtent = 0;
+    let sunCount = 0;
+    let sunHit = 0;
+    for (const p of points) {
+      if (p.tier !== 1) continue;
+      sunCount += 1;
+      sunExtent = Math.max(sunExtent, Math.hypot(p.x, p.y, p.z));
+      if ((p.hitCount || 0) > 0) sunHit += 1;
+    }
+    scene.sunExtent = sunExtent || 180;
+    scene.sunHitRatio = sunCount ? sunHit / sunCount : 0;
+    baseFocusIds = data.focusIds || [];
+    focus = new Set(baseFocusIds);
+    const byId = new Map(points.map((p) => [p.id, p]));
+    edges = (data.edges || []).filter((e) => byId.has(e.a) && byId.has(e.b));
+    const s = data.stats || {};
+    const span = s.span ? Math.max(1, Math.round((s.span.to - s.span.from) / 86400000)) : 0;
+    const hotN = points.reduce((n, p) => n + ((p.hitCount || 0) > 0 ? 1 : 0), 0);
+    elStats.innerHTML = [
+      `点 <b>${s.total || 0}</b>`, `线 <b>${s.edges || edges.length}</b>`,
+      `被调用 <b>${hotN}</b>`, `跨度 <b>${span}</b> 天`, `焦点 <b>${s.focusCount || 0}</b>`,
+    ].join('<span style="color:#2a3245"> | </span>');
+  }
+
+  // 首屏不该让人看到红字：先给骨架提示，失败按 2s → 5s → 15s 退避重试三次，
+  // 三次都失败才报错并给一个「重试」按钮（照墨鱼那份建议）。
+  const RETRY_DELAYS = [2000, 5000, 15000];
+
+  function skeleton(text) {
+    if (!elError) return;
+    elError.style.display = 'grid';
+    elError.innerHTML = '<div style="text-align:center;opacity:.72;line-height:1.9">' +
+      '<div style="font-size:15px;margin-bottom:6px">' + text + '</div>' +
+      '<div style="font-size:12px;color:#6d7891">记忆服务刚醒，通常几秒就好</div></div>';
+  }
+
+  function failWithRetry(error) {
+    if (!elError) return;
+    elError.style.display = 'grid';
+    elError.innerHTML = '';
+    const box = document.createElement('div');
+    box.style.cssText = 'text-align:center;line-height:1.9;max-width:520px';
+    const t1 = document.createElement('div');
+    t1.style.cssText = 'font-size:14px;color:#ffb3b3;margin-bottom:6px';
+    t1.textContent = '还是没连上：' + (error && error.message ? error.message : '未知错误');
+    const t2 = document.createElement('div');
+    t2.style.cssText = 'font-size:12px;color:#6d7891;margin-bottom:12px';
+    t2.textContent = '插件路由可能没起来——重启 DSH 或等 20 秒再点重试。';
+    const btn = document.createElement('button');
+    btn.textContent = '重试';
+    btn.style.cssText = 'padding:6px 18px;border-radius:999px;cursor:pointer;font:inherit;' +
+      'background:rgba(127,142,163,.14);color:#e8eeff;border:1px solid rgba(127,142,163,.4)';
+    btn.onclick = function () { load(false); };
+    box.appendChild(t1); box.appendChild(t2); box.appendChild(btn);
+    elError.appendChild(box);
+  }
+
+  async function fetchOnce(rebuild) {
+    if (rebuild) await fetch('/dsh-mem-stars/rebuild', { method: 'POST' });
+    const res = await fetch('/dsh-mem-stars/scene', { credentials: 'same-origin' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    if (!data.ok) throw new Error(data.error || '接口返回异常');
+    return data;
+  }
+
+  async function load(rebuild) {
+    skeleton('正在唤醒记忆服务…');
+    let lastErr = null;
+    for (let attempt = 0; attempt <= RETRY_DELAYS.length; attempt += 1) {
+      try {
+        if (attempt > 0) skeleton('第 ' + attempt + ' 次重试…');
+        const data = await fetchOnce(rebuild && attempt === 0);
+        ingest(data);
+        lastFetch = Date.now();
+        if (elError) elError.style.display = 'none';
+        return;
+      } catch (error) {
+        lastErr = error;
+        if (attempt < RETRY_DELAYS.length) {
+          await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+        }
+      }
+    }
+    failWithRetry(lastErr);
+  }
+
+  function visiblePoints() {
+    if (onlyFocus && focus.size) return points.filter((p) => focus.has(p.id) || true);
+    return points;
+  }
+
+  // 三维投影：先绕 Y 轴转（yaw）、再绕 X 轴转（pitch），最后透视除法。
+  function projectRaw(wx, wy, wz) {
+    const cy = Math.cos(cam.yaw);
+    const sy = Math.sin(cam.yaw);
+    const cp = Math.cos(cam.pitch);
+    const sp = Math.sin(cam.pitch);
+    const x1 = wx * cy - wz * sy;
+    const z1 = wx * sy + wz * cy;
+    const y1 = wy * cp - z1 * sp;
+    const z2 = wy * sp + z1 * cp;
+    const depth = cam.dist + z2;
+    const f = FOCAL / Math.max(140, depth);
+    return { x: innerWidth / 2 + x1 * f, y: innerHeight / 2 + y1 * f, f, depth };
+  }
+
+  function project(point, t) {
+    const drift = onlyFocus ? 0 : 1;
+    return projectRaw(
+      point.x + cam.panX + Math.sin(t / 3200 + point.phase) * 7 * drift,
+      point.y + cam.panY + Math.cos(t / 4100 + point.phase) * 5 * drift,
+      point.z + Math.sin(t / 2700 + point.phase * 1.3) * 7 * drift,
+    );
+  }
+
+  // 轨道线：在三维里采样一圈再投影，透视下去自然成椭圆。
+  function drawOrbit(planet, segments, style) {
+    const ct = Math.cos(planet.orbitTilt || 0);
+    const st = Math.sin(planet.orbitTilt || 0);
+    ctx.beginPath();
+    for (let i = 0; i <= segments; i += 1) {
+      const a = (i / segments) * Math.PI * 2;
+      const lz = Math.sin(a) * planet.orbitR;
+      const p = projectRaw(
+        Math.cos(a) * planet.orbitR,                    // 太阳在原点
+        (planet.orbitY || 0) + lz * st,
+        lz * ct,
+      );
+      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+    }
+    ctx.strokeStyle = style;
+    ctx.stroke();
+  }
+
+  // 行星环：绕着自己那颗行星的一圈
+  function drawRing(planet, rr, tilt, yaw, segments, style) {
+    const ct = Math.cos(tilt); const st = Math.sin(tilt);
+    const cyaw = Math.cos(yaw); const syaw = Math.sin(yaw);
+    ctx.beginPath();
+    for (let i = 0; i <= segments; i += 1) {
+      const a = (i / segments) * Math.PI * 2;
+      const lx0 = Math.cos(a) * rr;
+      const ly0 = Math.sin(a) * rr;
+      const ly1 = ly0 * ct;
+      const lz1 = ly0 * st;
+      const p = projectRaw(
+        planet.x + lx0 * cyaw - lz1 * syaw,
+        planet.y + ly1,
+        planet.z + lx0 * syaw + lz1 * cyaw,
+      );
+      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y);
+    }
+    ctx.strokeStyle = style;
+    ctx.stroke();
+  }
+
+  let errShown = false;
+  function reportOnce(e) {
+    if (errShown) return;
+    errShown = true;
+    if (!elError) return;
+    elError.style.display = 'grid';
+    elError.innerHTML = '';
+    const d = document.createElement('div');
+    d.style.cssText = 'text-align:left;font:12px/1.7 ui-monospace,monospace;color:#ffb3b3;max-width:80vw;white-space:pre-wrap';
+    d.textContent = '画的时候出错：' + (e && e.message ? e.message : e) + '\n' +
+      String((e && e.stack) || '').split('\n').slice(0, 4).join('\n');
+    elError.appendChild(d);
+  }
+
+  function frame(t) {
+    try {
+      drawFrame(t);
+    } catch (e) {
+      reportOnce(e);          // 报错也要继续转，别让循环死掉变黑屏
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function drawFrame(t) {
+    ctx.clearRect(0, 0, innerWidth, innerHeight);
+    // 背景星尘
+    ctx.save();
+    ctx.globalAlpha = 0.5;
+    for (let i = 0; i < 140; i += 1) {
+      const x = (hash('bg' + i) % 1000) / 1000 * innerWidth;
+      const y = (hash('bgy' + i) % 1000) / 1000 * innerHeight;
+      const a = 0.05 + ((Math.sin(t / 2600 + i) + 1) / 2) * 0.12;
+      ctx.fillStyle = `rgba(150,180,255,${a})`;
+      ctx.fillRect(x, y, 1, 1);
+    }
+    ctx.restore();
+
+    const list = visiblePoints();
+    updateMotion(list, t - motionEpoch);
+    const pos = new Map();
+    for (const point of list) pos.set(point.id, project(point, t));
+    lastPos = pos;
+
+    // 远 → 近 排序，后画的压住先画的，才有纵深遮挡感
+    const order = list.slice().sort((a, b) => pos.get(b.id).depth - pos.get(a.id).depth);
+    const idx = new Set(list.map((p) => p.id));
+
+    // 太阳：实心亮核 + 外圈细环（照用户给的图：实心橙圆外面套一圈细描边），更大更亮
+    const sunPos = projectRaw(cam.panX, cam.panY, 0);
+    const breathe = 1 + Math.sin(t / 2600) * 0.06;
+    const sunExt = (scene && scene.sunExtent) || 180;   // 第一帧时 scene 还没到
+    const sunHit = (scene && scene.sunHitRatio) || 0;   // 核心记忆被调用过的比例
+    // 用固定的世界半径算太阳，不跟 sunExt 走 —— 否则环一变大太阳就被拉着变大，
+    // 内圈永远压在太阳上。90 是世界单位，屏幕上看着约 27~36px。
+    const sunR = Math.max(24, 90 * sunPos.f * breathe);
+
+    // ① 外层大光晕：往外散开，让"更大更亮"体现在光上而不是把球撑大
+    const outer = ctx.createRadialGradient(
+      sunPos.x, sunPos.y, sunR * 0.55,
+      sunPos.x, sunPos.y, sunR * 3.1,
+    );
+    outer.addColorStop(0, `rgba(255,175,100,${Math.min(0.34, 0.20 + sunHit * 0.28)})`);
+    outer.addColorStop(0.42, 'rgba(255,145,80,.11)');
+    outer.addColorStop(1, 'rgba(255,120,60,0)');
+    ctx.fillStyle = outer;
+    ctx.beginPath();
+    ctx.arc(sunPos.x, sunPos.y, sunR * 3.1, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ② 实心亮核：偏左上的高光，看起来是个球而不是贴片
+    const core = ctx.createRadialGradient(
+      sunPos.x - sunR * 0.14, sunPos.y - sunR * 0.14, sunR * 0.04,
+      sunPos.x, sunPos.y, sunR,
+    );
+    core.addColorStop(0, 'rgba(255,250,232,1)');
+    core.addColorStop(0.42, 'rgba(255,198,132,.97)');
+    core.addColorStop(0.84, 'rgba(250,136,78,.94)');
+    core.addColorStop(1, 'rgba(236,104,56,.82)');
+    ctx.fillStyle = core;
+    ctx.beginPath();
+    ctx.arc(sunPos.x, sunPos.y, sunR, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ③ 外圈细描边：就是图里那一圈，轻微脉动
+    ctx.strokeStyle = `rgba(255,196,138,${0.48 + 0.2 * Math.sin(t / 1800)})`;
+    ctx.lineWidth = Math.max(1, sunR * 0.035);
+    ctx.beginPath();
+    ctx.arc(sunPos.x, sunPos.y, sunR * 1.44, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // ④ 更外一圈淡环，补一层扩散感
+    ctx.strokeStyle = 'rgba(255,162,102,.15)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.arc(sunPos.x, sunPos.y, sunR * 2.0, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // 轨道：太阳在最里，行星一圈圈往外；每颗行星外面再套几圈它自己的环
+    ctx.lineWidth = 1;
+    for (const point of list) {
+      if (!point.planet) continue;
+      const near = pos.get(point.id).f;
+      const alpha = (onlyFocus ? 0.025 : 0.10) * Math.min(1, near * 1.4);
+      drawOrbit(point, 56, `rgba(120,155,235,${alpha})`);
+      for (const ring of point.rings || []) {
+        drawRing(point, ring.rr, ring.tilt, ring.yaw, 36,
+          `rgba(150,185,245,${alpha * 0.85})`);
+      }
+    }
+
+    // 线：默认只在鼠标指到某个点时，才画它自己的那些连线；按「连线」按钮才全显
+    const activeId = hovered || selected;
+    const related = new Set();
+    if (activeId) {
+      related.add(activeId);
+      for (const edge of edges) {
+        if (edge.a === activeId) related.add(edge.b);
+        else if (edge.b === activeId) related.add(edge.a);
+      }
+    }
+    ctx.lineWidth = 1;
+    for (const edge of edges) {
+      if (!idx.has(edge.a) || !idx.has(edge.b)) continue;
+      const involved = activeId && (edge.a === activeId || edge.b === activeId);
+      if (!showAllEdges && !involved) continue;
+      if (onlyFocus && !(focus.has(edge.a) && focus.has(edge.b))) continue;
+      const a = pos.get(edge.a);
+      const b = pos.get(edge.b);
+      const near = (a.f + b.f) * 0.5;
+      const alpha = involved
+        ? Math.min(0.75, 0.30 + edge.score * 0.34)
+        : Math.min(0.5, (0.03 + edge.score * 0.18) * near * 1.7);
+      ctx.strokeStyle = involved
+        ? `rgba(196,222,255,${alpha})`
+        : edge.kind === 'topic'
+          ? `rgba(120,170,255,${alpha})`
+          : `rgba(180,200,230,${alpha * 0.8})`;
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
+
+    // 行星名：每颗行星头上标「项目 · 多少条」
+    ctx.font = '600 13px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'center';
+    for (const point of list) {
+      if (!point.planet) continue;
+      const p = pos.get(point.id);
+      if (!p || p.f < 0.28) continue;
+      ctx.globalAlpha = (onlyFocus ? 0.15 : 0.66) * Math.min(1, p.f * 1.8);
+      ctx.fillStyle = '#bcd0f5';
+      ctx.fillText(`${point.topic} · ${point.mass || 0}`,
+        p.x, p.y - point.radius * p.f * 2.4 - 9);
+    }
+    ctx.globalAlpha = 1;
+    ctx.textAlign = 'left';
+
+    // 点：远小近大、远淡近亮
+    for (const point of order) {
+      const p = pos.get(point.id);
+      const isFocus = focus.has(point.id);
+      const isSel = selected === point.id;
+      const isHover = hovered === point.id;
+      // 核心记忆（星环上那些点）统一橙红，跟外层行星的冷色区分开
+      const [r, g, b] = point.coreRing
+        ? [255, 128, 64]
+        : (point.color
+          || (point.diary ? DIARY_COLOR : (KIND_COLOR[point.kind] || KIND_COLOR.event)));
+      const dim = onlyFocus && !isFocus;
+      const isRel = related.has(point.id);
+      // 被调用过的记忆：越大、越亮、自己带一圈光（hit 次数越多越明显）
+      const heat = Math.min(6, point.hitCount || 0);
+      // 核心记忆的点用更小的倍数，跟外圈尘埃区分开
+      const sizeScale = point.coreRing ? 1.12 : 2.1;
+      const base = Math.max(0.65,
+        point.radius * (1 + heat * 0.12) * (isFocus ? 1.9 : 1) * p.f * sizeScale);
+      // 鼠标指着一个点时，跟它不相连的点压暗，让那几条线浮出来
+      const fade = activeId && !isRel ? 0.34 : 1;
+      // 核心记忆的亮度完全按调用次数走：0 次很暗、6 次以上最亮
+      const alpha = point.coreRing
+        ? Math.min(1, 0.12 + heat * 0.15) * (0.55 + p.f * 0.6)
+        : Math.min(1, (0.22 + p.f * 1.05) * (1 + Math.min(0.55, heat * 0.11)));
+      ctx.globalAlpha = dim ? 0.08 : alpha * fade;
+
+      // 被调用 2 次以上的，自己发一小圈光
+      if (heat >= 2) {
+        const gr = base * 3.6;
+        const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, gr);
+        halo.addColorStop(0, `rgba(${r},${g},${b},${0.14 + heat * 0.055})`);
+        halo.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, gr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 核心记忆自己发光：只有被调用过的才明显亮，没调用过的不发光
+      if (point.coreRing && heat > 0) {
+        const gr = Math.max(4, base * (1.8 + heat * 0.35));
+        const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, gr);
+        const pulse = 0.28 + 0.10 * heat + 0.14 * Math.sin(t / 720 + (point.phase || 0));
+        halo.addColorStop(0, `rgba(255,150,90,${Math.min(0.85, pulse)})`);
+        halo.addColorStop(0.45, 'rgba(255,110,60,0.12)');
+        halo.addColorStop(1, 'rgba(255,90,50,0)');
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, gr, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // 行星自己发光：一颗亮核 + 一圈晕
+      if (point.planet) {
+        const gr = Math.max(12, base * 5.2);
+        const halo = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, gr);
+        halo.addColorStop(0, `rgba(${r},${g},${b},0.60)`);
+        halo.addColorStop(0.38, `rgba(${r},${g},${b},0.15)`);
+        halo.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = halo;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, gr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(${r},${g},${b},${0.55 + 0.25 * Math.sin(t / 900)})`;
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, base * 1.5, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      if (isFocus || isHover || isSel) {
+        const glow = ctx.createRadialGradient(p.x, p.y, 0, p.x, p.y, base * 7);
+        glow.addColorStop(0, `rgba(${r},${g},${b},${isSel ? 0.55 : 0.35})`);
+        glow.addColorStop(1, `rgba(${r},${g},${b},0)`);
+        ctx.fillStyle = glow;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, base * 7, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = `rgba(${r},${g},${b},${0.5 + 0.3 * Math.sin(t / 600)})`;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, base * 3.2, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = `rgba(${r},${g},${b},${isFocus ? 1 : 0.85})`;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, Math.max(0.8, base), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // 每个点旁边标一句它是什么
+    drawPointLabels(list, pos, t);
+
+    // 悬停文字
+    if (hovered) {
+      const point = list.find((p) => p.id === hovered);
+      if (point) {
+        const p = pos.get(point.id);
+        const label = point.text.length > 24 ? point.text.slice(0, 24) + '…' : point.text;
+        ctx.font = '12px "Microsoft YaHei", sans-serif';
+        const width = ctx.measureText(label).width + 14;
+        ctx.fillStyle = 'rgba(8,11,20,.88)';
+        ctx.strokeStyle = 'rgba(120,160,255,.28)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.roundRect(p.x + 10, p.y - 22, width, 22, 6);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#dfe8ff';
+        ctx.fillText(label, p.x + 17, p.y - 7);
+      }
+    }
+
+    if (Date.now() - lastFetch > 60000) load(false);
+  }
+
+  // 每个点旁边标一句它是什么：按权重挑、按屏幕格子避让，缩放越大标得越多。
+  function drawPointLabels(list, pos, t) {
+    if (!showLabels) return;
+    const budget = Math.max(24, Math.min(280, Math.round(72 * (CAM_DEFAULT.dist / cam.dist))));
+    const rank = (p) => (focus.has(p.id) ? 4 : 0) + (p.id === selected ? 4 : 0) + (p.id === hovered ? 4 : 0) + (Number(p.weight) || 0);
+    const candidates = list
+      .filter((point) => {
+        if (!point.text || point.text.length < 2) return false;
+        const p = pos.get(point.id);
+        if (!p || p.f < 0.55) return false;   // 太远的点不标，留给近景
+        if (onlyFocus && focus.size) return focus.has(point.id) || point.id === hovered || point.id === selected;
+        return true;
+      })
+      .sort((a, b) => rank(b) - rank(a))
+      .slice(0, budget);
+
+    const occupied = new Set();
+    ctx.font = '11px system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif';
+    ctx.textAlign = 'left';
+    for (const point of candidates) {
+      const p = pos.get(point.id);
+      if (!p) continue;
+      const label = point.text.length > 14 ? `${point.text.slice(0, 14)}…` : point.text;
+      const w = ctx.measureText(label).width;
+      const x = Math.round(p.x + 7);
+      const y = Math.round(p.y - 5);
+      if (x + w > innerWidth - 4 || x < -2) continue;
+      const cell = `${Math.floor(x / 104)}:${Math.floor(y / 14)}`;
+      if (occupied.has(cell)) continue;
+      occupied.add(cell);
+      const hot = point.id === hovered || point.id === selected || focus.has(point.id);
+      ctx.globalAlpha = hot ? 0.95 : 0.42;
+      ctx.fillStyle = hot ? '#e6efff' : '#93a3c4';
+      ctx.fillText(label, x, y);
+      if (hot) {
+        ctx.globalAlpha = 0.4;
+        ctx.fillStyle = '#78aaff';
+        ctx.fillRect(x - 3, y - 9, 1.2, 11);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  function pick(mx, my) {
+    const now = performance.now();
+    let best = null;
+    let bestDist = 16;
+    for (const point of points) {
+      const p = lastPos.get(point.id) || project(point, now);
+      const dist = Math.hypot(p.x - mx, p.y - my);
+      if (dist < bestDist) { bestDist = dist; best = point; }
+    }
+    return best;
+  }
+
+  function showDetail(point) {
+    if (!point) { detail.classList.remove('on'); return; }
+    detail.classList.add('on');
+    document.getElementById('dKind').textContent = point.diary ? `她的日记 · ${point.diary.date}` : (KIND_LABEL[point.kind] || point.kind);
+    document.getElementById('dText').textContent = point.full || point.text;
+    const when = new Date(point.t);
+    document.getElementById('dTime').textContent = `${when.getMonth() + 1}/${when.getDate()} ${String(when.getHours()).padStart(2, '0')}:${String(when.getMinutes()).padStart(2, '0')}`;
+    document.getElementById('dTopic').textContent = `主题 ${point.cluster || point.topic}`;
+    document.getElementById('dSource').textContent = point.source?.type === 'diary'
+      ? '来自她自己写的日记'
+      : (point.source?.type === 'longterm' ? '来自长期记忆' : '来自真实消息');
+    // 被调用过几次：这才是"这条真被用上了"的证据
+    const hitN = point.hitCount || 0;
+    document.getElementById('dTags').innerHTML =
+      (hitN > 0
+        ? `<span style="background:rgba(255,200,120,.22);color:#ffd79a">被调用 ${hitN} 次</span>`
+        : '<span style="background:rgba(120,140,180,.10);color:#7f8aa5">还没被调用过</span>')
+      + (point.keywords || []).map((k) => `<span>${k}</span>`).join('');
+  }
+
+  // 左键拖动 = 转整片海（三维），右键拖动 = 平移，滚轮 = 拉近拉远。
+  window.addEventListener('mousedown', (event) => {
+    if (event.button !== 0 && event.button !== 2) return;
+    if (event.target.closest && event.target.closest('button, a, input, textarea')) return;
+    event.preventDefault();
+    dragging = {
+      x: event.clientX,
+      y: event.clientY,
+      mode: event.button === 2 ? 'pan' : 'orbit',
+      yaw: cam.yaw,
+      pitch: cam.pitch,
+      panX: cam.panX,
+      panY: cam.panY,
+    };
+    dragMoved = false;
+    canvas.style.cursor = 'grabbing';
+  });
+  canvas.addEventListener('contextmenu', (event) => event.preventDefault());
+  window.addEventListener('mouseup', () => {
+    if (!dragging) return;
+    dragging = null;
+    canvas.style.cursor = 'grab';
+  });
+  window.addEventListener('mousemove', (event) => {
+    if (dragging) {
+      const dx = event.clientX - dragging.x;
+      const dy = event.clientY - dragging.y;
+      if (Math.hypot(dx, dy) > 4) dragMoved = true;
+      if (dragging.mode === 'orbit') {
+        cam.yaw = dragging.yaw + dx * 0.006;
+        cam.pitch = Math.max(-1.35, Math.min(1.35, dragging.pitch - dy * 0.006));
+      } else {
+        const k = cam.dist / FOCAL;
+        cam.panX = dragging.panX - dx * k;
+        cam.panY = dragging.panY - dy * k;
+      }
+      return;
+    }
+    if (event.target !== canvas) { hovered = null; return; }
+    const hit = pick(event.clientX, event.clientY);
+    hovered = hit ? hit.id : null;
+    canvas.style.cursor = hit ? 'pointer' : 'grab';
+  });
+  canvas.addEventListener('click', (event) => {
+    if (dragMoved) { dragMoved = false; return; }
+    const hit = pick(event.clientX, event.clientY);
+    selected = hit ? hit.id : null;
+    showDetail(hit);
+  });
+  canvas.addEventListener('wheel', (event) => {
+    event.preventDefault();
+    const factor = event.deltaY > 0 ? 1.08 : 0.92;
+    cam.dist = Math.min(9000, Math.max(600, cam.dist * factor));
+  }, { passive: false });
+
+  document.getElementById('btnFocus').addEventListener('click', (event) => {
+    onlyFocus = !onlyFocus;
+    event.currentTarget.classList.toggle('on', onlyFocus);
+  });
+
+  // ---- 搜索：在全部记忆里找字，命中就只留它们 ----
+  // 复用 focus + onlyFocus 那套现成的高亮/过滤机制，不新造渲染路径。
+  const qEl = document.getElementById('q');
+  const qHits = document.getElementById('qhits');
+  const btnFocusEl = document.getElementById('btnFocus');
+
+  let searchTimer = null;
+  let searchSeq = 0;
+
+  async function applySearch() {
+    const raw = String(qEl.value || '').trim();
+    if (!raw) {
+      focus = new Set(baseFocusIds);
+      onlyFocus = false;
+      btnFocusEl.classList.toggle('on', onlyFocus);
+      qHits.textContent = '';
+      return;
+    }
+    const lowered = raw.toLowerCase();
+
+    // ① 本地先出一版（正文 + 关键词都算），立刻有反馈
+    const terms = lowered.split(/\s+/).filter(Boolean);
+    const hit = new Set();
+    for (const p of points) {
+      const t = (String(p.text || '') + ' ' + (p.keywords || []).join(' ')).toLowerCase();
+      if (terms.every((term) => t.includes(term))) hit.add(p.id);
+    }
+
+    const seq = ++searchSeq;
+    focus = hit;
+    onlyFocus = hit.size > 0;
+    btnFocusEl.classList.toggle('on', onlyFocus);
+    let onScene = countOnScene(hit);
+    qHits.textContent = onScene ? onScene + ' 命中' : '…';
+    aimAt(hit);
+
+    // ② 回库补全：场景把正文截断到 160 字，库里有的条目在场景里搜不到。
+    //    拿 pid 合并进来，并重新统计/对准。
+    try {
+      const r = await fetch('/dsh-mem-stars/search?q=' + encodeURIComponent(raw), {
+        credentials: 'same-origin',
+      });
+      const d = await r.json();
+      if (seq !== searchSeq) return; // 有更新的输入，丢弃这次
+      for (const it of d.hits || []) hit.add(it.pid);
+      focus = hit;
+      onlyFocus = hit.size > 0;
+      btnFocusEl.classList.toggle('on', onlyFocus);
+      onScene = countOnScene(hit);
+      qHits.textContent = onScene ? onScene + ' 命中' : '无命中';
+      aimAt(hit);
+    } catch {
+      if (seq === searchSeq) qHits.textContent = onScene ? onScene + ' 命中' : '无命中';
+    }
+  }
+
+  /** 命中点里有多少真的在场景上（库里有、但场景可能过滤掉了） */
+  function countOnScene(hit) {
+    let n = 0;
+    for (const p of points) if (hit.has(p.id)) n += 1;
+    return n;
+  }
+
+  /** 把镜头平移到命中点的重心，并拉近一点，免得它们在星海里找不见 */
+  function aimAt(hit) {
+    let sx = 0;
+    let sy = 0;
+    let n = 0;
+    for (const p of points) {
+      if (!hit.has(p.id)) continue;
+      sx += p.x;
+      sy += p.y;
+      n += 1;
+    }
+    if (n === 0) return;
+    cam.panX = -sx / n;
+    cam.panY = -sy / n;
+    cam.dist = Math.min(cam.dist, 1200);
+  }
+
+
+  // 输入防抖：每敲一个字都打一次接口太费，180ms 后才发
+  qEl.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      applySearch().catch(() => {});
+    }, 180);
+  });
+  qEl.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      qEl.value = '';
+      applySearch();
+      qEl.blur();
+    }
+  });
+
+  document.getElementById('btnLabels').addEventListener('click', (event) => {
+    showLabels = !showLabels;
+    event.currentTarget.classList.toggle('on', showLabels);
+  });
+  document.getElementById('btnEdges').addEventListener('click', (event) => {
+    showAllEdges = !showAllEdges;
+    event.currentTarget.classList.toggle('on', showAllEdges);
+    event.currentTarget.textContent = showAllEdges ? '连线 · 全显' : '连线 · 仅悬停';
+  });
+  document.getElementById('btnRecent').addEventListener('click', (event) => {
+    const on = !event.currentTarget.classList.contains('on');
+    event.currentTarget.classList.toggle('on', on);
+    if (on && points.length > 300) {
+      points = points.slice(-300);
+      layout(points);
+      const ids = new Set(points.map((p) => p.id));
+      edges = edges.filter((e) => ids.has(e.a) && ids.has(e.b));
+    } else if (on === false) {
+      load(false);
+    }
+  });
+  document.getElementById('btnReset').addEventListener('click', () => { cam = { ...CAM_DEFAULT }; });
+
+  window.addEventListener('resize', resize);
+  resize();
+  load(true);
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

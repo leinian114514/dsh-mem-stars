@@ -1,0 +1,15 @@
+- insert:
+    - id: mem-stars
+      name: dsh-mem-stars
+      # webServer = 渲染页与场景路由；connection = 路由的信任栅栏；tools = 注册给 AI 自己查的两个工具
+      inject: [webServer, connection, tools]
+      config:
+        # 数据直连记忆库（不再依赖 my.json / 导出脚本）
+        # 2026-11-12 记忆系统切到自研 dsh-memory 后，现役库是 .dsh-memory；
+        # 旧库 .dsh-meow 已冻结，指它只能看到旧数据。
+        # memPath: 需要时填本地路径；不填用默认值
+        # 会话索引库（星环外那一圈「尘埃」来自这里）
+        # arcPath: 需要时填本地路径；不填用默认值
+        # 场景缓存寿命（毫秒）。前端每分钟自己拉一次，这里是兜底
+        ttlMs: 60000
+        # debugFile: 需要时填本地路径；不填用默认值
